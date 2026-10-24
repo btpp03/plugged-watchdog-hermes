@@ -149,7 +149,26 @@ def wait_status(page, timeout=60):
     return status, text
 
 
+def health_ok():
+    """Public launcher endpoint: if it answers, the container + node + agent are up."""
+    import urllib.request
+    url = os.environ.get("PLUGGED_HEALTH_URL", f"http://{os.environ.get('PLUGGED_HOST', 'th1.plugged.host')}:{os.environ.get('PLUGGED_PORT', '30124')}/health")
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:
+            data = json.loads(r.read().decode())
+        print("health:", data, "|", url)
+        return bool(data.get("up") or data.get("agent_pids"))
+    except Exception as exc:  # noqa: BLE001
+        print("health failed:", str(exc)[:120], "|", url)
+        return False
+
+
 def main():
+    if health_ok():
+        print("RESULT: ONLINE-NO-ACTION (health endpoint answered)")
+        return 0
+    print("health endpoint dead -> checking panel, will press Start if the server is Offline")
+
     with sync_playwright() as pw:
         br = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
         ctx = br.new_context(viewport={"width": 1400, "height": 1000}, locale="en-US")
@@ -206,7 +225,16 @@ def main():
         time.sleep(15)
         status2, _ = wait_status(page, timeout=45)
         print("status after start:", status2)
-        print("RESULT:", "RESTARTED" if clicked and status2 in ("Starting", "Running") else "RESTART-FAILED")
+        for _ in range(9):  # up to ~3 min for the container to boot
+            if health_ok():
+                print("RESULT: RESTARTED (health endpoint is answering again)")
+                break
+            time.sleep(20)
+        else:
+            print("RESULT:", "RESTART-REQUESTED-BUT-NOT-UP" if clicked else "RESTART-FAILED")
+            json.dump(ctx.cookies(), open("/tmp/plugged_cookies_after.json", "w"))
+            br.close()
+            return 3
         json.dump(ctx.cookies(), open("/tmp/plugged_cookies_after.json", "w"))
         br.close()
         return 0 if clicked else 3
