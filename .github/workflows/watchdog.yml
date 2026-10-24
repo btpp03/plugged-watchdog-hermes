@@ -1,0 +1,35 @@
+name: plugged watchdog
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: plugged-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install playwright
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet playwright==1.47.0
+          python -m playwright install --with-deps chromium
+
+      - name: check and restart if offline
+        env:
+          PLUGGED_SERVER: ${{ vars.PLUGGED_SERVER || '9b071dd5' }}
+          NOPROFIT_COOKIES: ${{ secrets.NOPROFIT_COOKIES }}
+          PLUGGED_LOGIN: ${{ secrets.PLUGGED_LOGIN }}
+          PLUGGED_PWD: ${{ secrets.PLUGGED_PWD }}
+        run: python watchdog.py
