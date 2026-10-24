@@ -137,6 +137,18 @@ def status_of(page):
     return (m.group(1) if m else "?"), text
 
 
+def wait_status(page, timeout=60):
+    """Panel renders the Status row a few seconds after load (slower on CI IPs)."""
+    deadline = time.time() + timeout
+    status, text = "?", ""
+    while time.time() < deadline:
+        status, text = status_of(page)
+        if status != "?":
+            return status, text
+        time.sleep(3)
+    return status, text
+
+
 def main():
     with sync_playwright() as pw:
         br = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
@@ -156,7 +168,7 @@ def main():
             page.goto(target, wait_until="domcontentloaded", timeout=60000)
             time.sleep(6)
 
-        status, text = status_of(page)
+        status, text = wait_status(page)
         print("status:", status, "| url:", page.url)
         if "suspended" in text.lower():
             m = re.search(r"What the scan found[^.]*\.", text)
@@ -166,6 +178,10 @@ def main():
         if status in ("Running", "Starting", "Stopping", "Installing"):
             print("RESULT: ONLINE-NO-ACTION")
             return 0
+        if status == "?":
+            print("RESULT: UNKNOWN-STATUS (page never rendered a Status row)")
+            print("TEXT:", text[:400])
+            return 4
         # Offline / Stopped -> press Start
         clicked = False
         for name in ("Start", "Start server"):
@@ -187,8 +203,8 @@ def main():
                 clicked = True
             except Exception as exc:  # noqa: BLE001
                 print("js click failed:", str(exc)[:100])
-        time.sleep(12)
-        status2, _ = status_of(page)
+        time.sleep(15)
+        status2, _ = wait_status(page, timeout=45)
         print("status after start:", status2)
         print("RESULT:", "RESTARTED" if clicked and status2 in ("Starting", "Running") else "RESTART-FAILED")
         json.dump(ctx.cookies(), open("/tmp/plugged_cookies_after.json", "w"))
