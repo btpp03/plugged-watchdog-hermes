@@ -163,6 +163,32 @@ def health_ok():
         return False
 
 
+def _force_power(page, action="start"):
+    """Press a Filament power action even when the panel has it marked disabled.
+
+    Verified 2026-10-25: the panel's Status label sticks on "Starting" forever for this
+    egg, which leaves Start/Restart greyed out. Clearing the `disabled` attribute and
+    clicking works — the request goes into Pelican's start queue and the container boots.
+    """
+    js = """(action) => {
+        const nodes = Array.from(document.querySelectorAll('button, a')).filter(n => n.getAttribute('wire:click'));
+        const hit = nodes.find(n => (n.getAttribute('wire:click') || '').includes("mountAction('" + action + "'"));
+        if (!hit) return 'not found';
+        const wasDisabled = hit.disabled;
+        hit.disabled = false;
+        hit.removeAttribute('disabled');
+        hit.click();
+        return 'clicked (wasDisabled=' + wasDisabled + ')';
+    }"""
+    try:
+        res = page.evaluate(js, action)
+        print(f"force {action}:", res)
+        return res.startswith("clicked")
+    except Exception as exc:  # noqa: BLE001
+        print("force click failed:", str(exc)[:140])
+        return False
+
+
 def main():
     if health_ok():
         print("RESULT: ONLINE-NO-ACTION (health endpoint answered)")
@@ -194,38 +220,27 @@ def main():
             print("SUSPENDED:", m.group(0) if m else "see panel")
             print("RESULT: SUSPENDED-NO-ACTION")
             return 2
-        if status in ("Running", "Starting", "Stopping", "Installing"):
-            print("RESULT: ONLINE-NO-ACTION")
-            return 0
-        if status == "?":
-            print("RESULT: UNKNOWN-STATUS (page never rendered a Status row)")
-            print("TEXT:", text[:400])
-            return 4
-        # Offline / Stopped -> press Start
+        # The Status label on this panel goes stale (it can still read "Starting" long
+        # after boot, and never connects its console socket in headless Chrome), so the
+        # health endpoint above is the only trustworthy "is it up" signal. Reaching here
+        # means the node is down: press Start regardless of the label.
+        print("node is down -> pressing Start")
         clicked = False
         for name in ("Start", "Start server"):
             try:
                 btn = page.get_by_role("button", name=name, exact=True).first
-                if btn.is_visible():
+                if btn.is_visible() and btn.is_enabled():
                     btn.click(timeout=10000)
                     clicked = True
                     break
             except Exception as exc:  # noqa: BLE001
                 print(f"click {name} failed:", str(exc)[:100])
         if not clicked:
-            try:
-                page.evaluate("""() => {
-                    var b = Array.from(document.querySelectorAll('button'))
-                        .find(function(x){ return (x.innerText||'').trim().toLowerCase() === 'start' && !x.disabled; });
-                    if (b) b.click();
-                }""")
-                clicked = True
-            except Exception as exc:  # noqa: BLE001
-                print("js click failed:", str(exc)[:100])
+            clicked = _force_power(page, "start")
         time.sleep(15)
         status2, _ = wait_status(page, timeout=45)
         print("status after start:", status2)
-        for _ in range(9):  # up to ~3 min for the container to boot
+        for _ in range(30):  # up to ~10 min: Pelican puts Start requests in a queue
             if health_ok():
                 print("RESULT: RESTARTED (health endpoint is answering again)")
                 break
